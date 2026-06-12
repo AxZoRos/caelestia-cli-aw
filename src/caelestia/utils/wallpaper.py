@@ -27,7 +27,19 @@ from caelestia.utils.theme import apply_colours
 
 
 def is_valid_image(path: Path) -> bool:
-    return path.is_file() and path.suffix in [".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".gif"]
+    return path.is_file() and path.suffix.lower() in [".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".gif"]
+
+
+def is_video(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() in [".mp4", ".webm", ".mkv"]
+
+
+def djb2_hash(s: str) -> str:
+    h = 5381
+    for char in s:
+        h = ((h << 5) + h) + ord(char)
+        h &= 0xFFFFFFFF
+    return f"{h:x}"
 
 
 def check_wall(wall: Path, filter_size: tuple[int, int], threshold: float) -> bool:
@@ -99,18 +111,32 @@ def get_smart_opts(wall: Path, cache: Path) -> dict:
     return opts
 
 
+def get_video_thumb_or_frame(wall: Path) -> Path:
+    from caelestia.utils.paths import c_cache_dir
+    h = djb2_hash(str(wall.resolve()))
+    fast_thumb = c_cache_dir / "videothumbs" / f"{h}.jpg"
+    if fast_thumb.exists():
+        return fast_thumb
+    return convert_video(wall)
+
+
 def get_colours_for_wall(wall: Path | str, no_smart: bool) -> None:
     wall = Path(wall)
     scheme = get_scheme()
-    cache = wallpapers_cache_dir / compute_hash(wall)
 
-    if wall.suffix.lower() == ".gif":
-        wall = convert_gif(wall)
+    if is_video(wall):
+        wall_cache = get_video_thumb_or_frame(wall)
+    elif wall.suffix.lower() == ".gif":
+        wall_cache = convert_gif(wall)
+    else:
+        wall_cache = wall
+
+    cache = wallpapers_cache_dir / compute_hash(wall_cache)
 
     name = "dynamic"
 
     if not no_smart:
-        smart_opts = get_smart_opts(wall, cache)
+        smart_opts = get_smart_opts(wall_cache, cache)
         scheme = Scheme(
             {
                 "name": name,
@@ -126,13 +152,13 @@ def get_colours_for_wall(wall: Path | str, no_smart: bool) -> None:
         "flavour": scheme.flavour,
         "mode": scheme.mode,
         "variant": scheme.variant,
-        "colours": get_colours_for_image(get_thumb(wall, cache), scheme),
+        "colours": get_colours_for_image(get_thumb(wall_cache, cache), scheme),
     }
 
 
 def convert_gif(wall: Path) -> Path:
     cache = wallpapers_cache_dir / compute_hash(wall)
-    output_path = cache / "first_frame.png"
+    output_path = cache / "first_frame.jpg"
 
     if not output_path.exists():
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -143,20 +169,125 @@ def convert_gif(wall: Path) -> Path:
                 pass
 
             img = img.convert("RGB")
-            img.save(output_path, "PNG")
+            width, height = img.size
+            img = img.resize((int(width * 0.5), int(height * 0.5)), Image.Resampling.LANCZOS)
+            img.save(output_path, "JPEG", quality=85)
 
     return output_path
 
+
+def convert_video(wall: Path) -> Path:
+    cache = wallpapers_cache_dir / compute_hash(wall)
+    output_path = cache / "first_frame.jpg"
+
+    if not output_path.exists():
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            "ffmpeg", "-y",
+            "-ss", "00:00:00.5",
+            "-i", str(wall),
+            "-vframes", "1",
+            "-vf", "scale=trunc(iw*0.5)*2:trunc(ih*0.5)*2",
+            "-q:v", "5",
+            str(output_path)
+        ]
+        try:
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        except Exception:
+            # Fallback to 00:00:00
+            cmd[3] = "00:00:00"
+            try:
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            except Exception:
+                pass
+
+    return output_path
+
+
+
+def _process_video_thumb(file_path, videothumbs_dir) -> None:
+    from caelestia.utils.paths import compute_hash
+    from pathlib import Path
+    import subprocess
+    
+    # We need djb2_hash which is defined at module level
+    def _djb2(s: str) -> str:
+        h = 5381
+        for char in s:
+            h = ((h << 5) + h) + ord(char)
+            h &= 0xFFFFFFFF
+        return f"{h:x}"
+        
+    try:
+        resolved_path = file_path.resolve()
+        h = _djb2(str(resolved_path))
+        thumb_path = videothumbs_dir / f"{h}.jpg"
+
+        if not thumb_path.exists() or thumb_path.stat().st_mtime < resolved_path.stat().st_mtime:
+            cmd = [
+                "ffmpeg", "-y",
+                "-ss", "00:00:00.5",
+                "-i", str(resolved_path),
+                "-vframes", "1",
+                "-vf", "scale=256:144:force_original_aspect_ratio=increase,crop=256:144",
+                "-q:v", "4",
+                str(thumb_path)
+            ]
+            try:
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+                with open("/tmp/caelestia_thumb_ready.txt", "a") as f:
+                    f.write(str(file_path) + "\n")
+            except Exception:
+                # Fallback to 00:00:00
+                cmd[3] = "00:00:00"
+                try:
+                    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+                    with open("/tmp/caelestia_thumb_ready.txt", "a") as f:
+                        f.write(str(file_path) + "\n")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+def extract_all_video_thumbs() -> None:
+    from caelestia.utils.paths import wallpapers_dir, c_cache_dir
+    from pathlib import Path
+    import os
+    import concurrent.futures
+
+    open("/tmp/caelestia_thumb_ready.txt", "w").close()
+
+    videothumbs_dir = c_cache_dir / "videothumbs"
+    videothumbs_dir.mkdir(parents=True, exist_ok=True)
+
+    video_extensions = [".mp4", ".webm", ".mkv"]
+    tasks = []
+    
+    for root_dir, _, files in os.walk(wallpapers_dir):
+        for file in files:
+            file_path = Path(root_dir) / file
+            if file_path.suffix.lower() in video_extensions:
+                tasks.append(file_path)
+
+    # Use ThreadPoolExecutor to run ffmpeg in parallel, reducing time from 35s to ~1.5s
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+        for file_path in tasks:
+            executor.submit(_process_video_thumb, file_path, videothumbs_dir)
 
 def set_wallpaper(wall: Path, no_smart: bool) -> None:
     # Make path absolute
     wall = Path(wall).resolve()
 
-    if not is_valid_image(wall):
-        raise ValueError(f'"{wall}" is not a valid image')
+    if not is_valid_image(wall) and not is_video(wall):
+        raise ValueError(f'"{wall}" is not a valid image or video')
 
-    # Use gif's 1st frame for thumb only
-    wall_cache = convert_gif(wall) if wall.suffix.lower() == ".gif" else wall
+    # Use gif's 1st frame or video's extracted frame for thumb only
+    if is_video(wall):
+        wall_cache = get_video_thumb_or_frame(wall)
+    elif wall.suffix.lower() == ".gif":
+        wall_cache = convert_gif(wall)
+    else:
+        wall_cache = wall
 
     # Update files
     wallpaper_path_path.parent.mkdir(parents=True, exist_ok=True)
@@ -171,7 +302,20 @@ def set_wallpaper(wall: Path, no_smart: bool) -> None:
     thumb = get_thumb(wall_cache, cache)
     wallpaper_thumbnail_path.parent.mkdir(parents=True, exist_ok=True)
     wallpaper_thumbnail_path.unlink(missing_ok=True)
+    print(f"DEBUG: setting wallpaper to {wall}")
     wallpaper_thumbnail_path.symlink_to(thumb)
+
+    if is_video(wall):
+        from caelestia.utils.paths import c_cache_dir
+        videothumbs_dir = c_cache_dir / "videothumbs"
+        videothumbs_dir.mkdir(parents=True, exist_ok=True)
+        fast_thumb = videothumbs_dir / f"{djb2_hash(str(wall.resolve()))}.jpg"
+        if not fast_thumb.exists():
+            import shutil
+            try:
+                shutil.copy(thumb, fast_thumb)
+            except Exception:
+                pass
 
     scheme = get_scheme()
 
