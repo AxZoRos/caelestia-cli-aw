@@ -368,7 +368,7 @@ def apply_chromium(colours: dict[str, str]) -> None:
 
 
 def apply_zed(colours: dict[str, str], mode: str) -> None:
-    theme_path = config_dir / "zed/themes/caelestia.json
+    theme_path = config_dir / "zed/themes/caelestia.json"
     if theme_path.is_symlink():
         theme_path.unlink()
 
@@ -395,6 +395,18 @@ def apply_user_templates(colours: dict[str, str], mode: str) -> None:
 
 
 def apply_colours(colours: dict[str, str], mode: str) -> None:
+    # --- Asus TUF Keyboard Sync ---
+    try:
+        primary_hex = colours.get("primary", "ffffff")
+        subprocess.run(
+            ["asusctl", "aura", "effect", "static", "-c", primary_hex],
+            stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL
+        )
+    except Exception:
+        pass
+    # ------------------------------
+
     # file-based lock to prevent concurrent theme changes
     lock_file = c_state_dir / "theme.lock"
     c_state_dir.mkdir(parents=True, exist_ok=True)
