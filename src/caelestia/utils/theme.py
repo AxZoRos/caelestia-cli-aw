@@ -396,6 +396,56 @@ def apply_user_templates(colours: dict[str, str], mode: str) -> None:
 
 
 def apply_colours(colours: dict[str, str], mode: str) -> None:
+    # --- Asus TUF Keyboard Sync ---
+    try:
+        primary_hex = colours.get("primary", "ffffff")
+        # Strip # just in case, though usually not present
+        primary_hex = primary_hex.lstrip("#")
+        
+        # Boost pale/light colors so they don't look white on the LED keyboard
+        import colorsys
+        try:
+            if len(primary_hex) == 6:
+                r = int(primary_hex[0:2], 16) / 255.0
+                g = int(primary_hex[2:4], 16) / 255.0
+                b = int(primary_hex[4:6], 16) / 255.0
+                h, l, s = colorsys.rgb_to_hls(r, g, b)
+                # Two-tier boosting for pale colors, ignoring grayscale
+                if s > 0.15:
+                    if l >= 0.85:
+                        # Very pale: drop lightness by 15%, boost saturation by 35% (25% + 10%)
+                        l = max(0.5, l * 0.85)
+                        s = min(1.0, s * 1.35)
+                        r, g, b = colorsys.hls_to_rgb(h, l, s)
+                        primary_hex = f"{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
+                    elif l >= 0.75:
+                        # Slightly pale: drop lightness by 10%, boost saturation by 30% (25% + 5%)
+                        l = max(0.5, l * 0.90)
+                        s = min(1.0, s * 1.30)
+                        r, g, b = colorsys.hls_to_rgb(h, l, s)
+                        primary_hex = f"{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
+        except ValueError:
+            pass
+        
+        # Use Popen to run asynchronously (prevents lag) and log output to debug
+        with open("/tmp/asusctl_debug.log", "w") as dbg_log:
+            subprocess.Popen(
+                ["/usr/bin/asusctl", "aura", "effect", "static", "-c", primary_hex],
+                stdout=dbg_log,
+                stderr=dbg_log,
+                start_new_session=True
+            )
+            subprocess.Popen(
+                ["/usr/bin/asusctl", "leds", "set", "med"],
+                stdout=dbg_log,
+                stderr=dbg_log,
+                start_new_session=True
+            )
+    except Exception as e:
+        with open("/tmp/asusctl_debug.log", "a") as dbg_log:
+            dbg_log.write(f"Python exception: {str(e)}\n")
+    # ------------------------------
+
     # file-based lock to prevent concurrent theme changes
     lock_file = c_state_dir / "theme.lock"
     c_state_dir.mkdir(parents=True, exist_ok=True)
