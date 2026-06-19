@@ -360,10 +360,11 @@ def apply_chromium(colours: dict[str, str]) -> None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        subprocess.run(
+        subprocess.Popen(
             [cmd, "--refresh-platform-policy", "--no-startup-window"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            start_new_session=True,
         )
 
 
@@ -395,25 +396,6 @@ def apply_user_templates(colours: dict[str, str], mode: str) -> None:
 
 
 def apply_colours(colours: dict[str, str], mode: str) -> None:
-    # --- Asus TUF Keyboard Sync ---
-    try:
-        primary_hex = colours.get("primary", "ffffff")
-        # Strip # just in case, though usually not present
-        primary_hex = primary_hex.lstrip("#")
-        
-        # Use Popen to run asynchronously (prevents lag) and log output to debug
-        with open("/tmp/asusctl_debug.log", "w") as dbg_log:
-            subprocess.Popen(
-                ["/usr/bin/asusctl", "aura", "effect", "static", "-c", primary_hex],
-                stdout=dbg_log,
-                stderr=dbg_log,
-                start_new_session=True
-            )
-    except Exception as e:
-        with open("/tmp/asusctl_debug.log", "a") as dbg_log:
-            dbg_log.write(f"Python exception: {str(e)}\n")
-    # ------------------------------
-
     # file-based lock to prevent concurrent theme changes
     lock_file = c_state_dir / "theme.lock"
     c_state_dir.mkdir(parents=True, exist_ok=True)
