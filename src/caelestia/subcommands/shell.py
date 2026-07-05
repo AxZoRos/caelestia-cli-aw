@@ -1,5 +1,7 @@
+import os
 import subprocess
 from argparse import Namespace
+from pathlib import Path
 
 from caelestia.utils.paths import c_cache_dir
 
@@ -24,6 +26,16 @@ class Command:
             # Send a message
             self.message(*self.args.message)
         else:
+            # Hardware Decoder Injection
+            try:
+                decoder_file = Path(os.path.expanduser("~/.cache/caelestia/hwDecoder.txt"))
+                if decoder_file.exists():
+                    decoder = decoder_file.read_text().strip()
+                    if decoder and decoder.lower() != "auto":
+                        os.environ["QT_FFMPEG_DECODING_HW_DEVICE_TYPES"] = decoder
+            except Exception:
+                pass
+
             # Start the shell
             args = ["qs", "-c", "caelestia", "-n"]
             if self.args.log_rules:
