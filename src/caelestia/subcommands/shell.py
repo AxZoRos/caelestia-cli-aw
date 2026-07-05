@@ -1,7 +1,7 @@
-import os
 import subprocess
 from argparse import Namespace
 from pathlib import Path
+import os
 
 from caelestia.utils.paths import c_cache_dir
 

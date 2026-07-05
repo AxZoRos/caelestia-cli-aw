@@ -8,16 +8,14 @@ import tempfile
 from pathlib import Path
 
 from caelestia.utils.colour import get_dynamic_colours
-from caelestia.utils.hypr import is_lua_config
-from caelestia.utils.io import log_exception
+from caelestia.utils.logging import log_exception
 from caelestia.utils.paths import (
-    atomic_write,
     c_state_dir,
     config_dir,
     data_dir,
-    get_config,
     templates_dir,
     theme_dir,
+    user_config_path,
     user_templates_dir,
 )
 from caelestia.utils.scheme import get_scheme
@@ -28,14 +26,6 @@ def gen_conf(colours: dict[str, str]) -> str:
     for name, colour in colours.items():
         conf += f"${name} = {colour}\n"
     return conf
-
-
-def gen_lua(colours: dict[str, str]) -> str:
-    lua = "return {\n"
-    for name, colour in colours.items():
-        lua += f'  {name} = "{colour}",\n'
-    lua += "}"
-    return lua
 
 
 def gen_scss(colours: dict[str, str]) -> str:
@@ -120,6 +110,15 @@ def gen_sequences(colours: dict[str, str]) -> str:
     )
 
 
+def write_file(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.NamedTemporaryFile("w") as f:
+        f.write(content)
+        f.flush()
+        shutil.move(f.name, path)
+
+
 @log_exception
 def apply_terms(sequences: str) -> None:
     state = c_state_dir / "sequences.txt"
@@ -145,56 +144,57 @@ def apply_terms(sequences: str) -> None:
 
 @log_exception
 def apply_hypr(conf: str) -> None:
-    ext = "lua" if is_lua_config() else "conf"
-    atomic_write(config_dir / f"hypr/scheme/current.{ext}", conf)
+    write_file(config_dir / "hypr/scheme/current.conf", conf)
 
 
 @log_exception
 def apply_discord(scss: str) -> None:
+    import tempfile
+
     with tempfile.TemporaryDirectory("w") as tmp_dir:
         (Path(tmp_dir) / "_colours.scss").write_text(scss)
         conf = subprocess.check_output(["sass", "-I", tmp_dir, templates_dir / "discord.scss"], text=True)
 
     for client in "Equicord", "Vencord", "BetterDiscord", "equibop", "vesktop", "legcord":
-        atomic_write(config_dir / client / "themes/caelestia.theme.css", conf)
+        write_file(config_dir / client / "themes/caelestia.theme.css", conf)
 
 
 @log_exception
 def apply_pandora(colours: dict[str, str], mode: str) -> None:
     template = gen_replace(colours, templates_dir / "pandora.json", hash=True)
     template = template.replace("{{ $mode }}", mode)
-    atomic_write(data_dir / "PandoraLauncher/themes/caelestia.json", template)
+    write_file(data_dir / "PandoraLauncher/themes/caelestia.json", template)
 
 
 @log_exception
 def apply_spicetify(colours: dict[str, str], mode: str) -> None:
     template = gen_replace(colours, templates_dir / f"spicetify-{mode}.ini")
-    atomic_write(config_dir / "spicetify/Themes/caelestia/color.ini", template)
+    write_file(config_dir / "spicetify/Themes/caelestia/color.ini", template)
 
 
 @log_exception
 def apply_fuzzel(colours: dict[str, str]) -> None:
     template = gen_replace(colours, templates_dir / "fuzzel.ini")
-    atomic_write(config_dir / "fuzzel/fuzzel.ini", template)
+    write_file(config_dir / "fuzzel/fuzzel.ini", template)
 
 
 @log_exception
 def apply_btop(colours: dict[str, str]) -> None:
     template = gen_replace(colours, templates_dir / "btop.theme", hash=True)
-    atomic_write(config_dir / "btop/themes/caelestia.theme", template)
+    write_file(config_dir / "btop/themes/caelestia.theme", template)
     subprocess.run(["killall", "-USR2", "btop"], stderr=subprocess.DEVNULL)
 
 
 @log_exception
 def apply_nvtop(colours: dict[str, str]) -> None:
     template = gen_replace(colours, templates_dir / "nvtop.colors", hash=True)
-    atomic_write(config_dir / "nvtop/nvtop.colors", template)
+    write_file(config_dir / "nvtop/nvtop.colors", template)
 
 
 @log_exception
 def apply_htop(colours: dict[str, str]) -> None:
     template = gen_replace(colours, templates_dir / "htop.theme", hash=True)
-    atomic_write(config_dir / "htop/htoprc", template)
+    write_file(config_dir / "htop/htoprc", template)
     subprocess.run(["killall", "-USR2", "htop"], stderr=subprocess.DEVNULL)
 
 
@@ -221,11 +221,13 @@ def sync_papirus_colors(hex_color: str) -> None:
     g = int(hex_color[2:4], 16)
     b = int(hex_color[4:6], 16)
 
+    # Brightness and saturation
     max_val = max(r, g, b)
     min_val = min(r, g, b)
     brightness = max_val
     saturation = 0 if max_val == 0 else ((max_val - min_val) * 100) // max_val
 
+    # Low saturation = grayscale
     if saturation < 20:
         if brightness < 85:
             color = "black"
@@ -233,6 +235,7 @@ def sync_papirus_colors(hex_color: str) -> None:
             color = "grey"
         else:
             color = "white"
+    # Medium-low saturation with high brightness = pale variants
     elif saturation < 60 and brightness > 180:
         use_pale = True
         color = _determine_hue_color(r, g, b, brightness, use_pale)
@@ -252,11 +255,13 @@ def sync_papirus_colors(hex_color: str) -> None:
 
 def _determine_hue_color(r: int, g: int, b: int, brightness: int, use_pale: bool) -> str:
     if b > r and b > g:
+        # Blue dominant
         r_ratio = (r * 100) // b if b > 0 else 0
         g_ratio = (g * 100) // b if b > 0 else 0
         rg_diff = abs(r - g)
 
         if r_ratio > 70 and g_ratio > 70:
+            # Both R and G high relative to B = light blue/periwinkle
             if rg_diff < 15:
                 return "blue"
             elif r > g:
@@ -270,7 +275,9 @@ def _determine_hue_color(r: int, g: int, b: int, brightness: int, use_pale: bool
         else:
             return "blue"
     elif r > g and r > b:
+        # Red dominant
         if g > b + 30:
+            # Orange/yellow-ish/brown
             rg_ratio = (g * 100) // r if r > 0 else 0
             if use_pale:
                 if rg_ratio > 70 and brightness < 220:
@@ -287,6 +294,7 @@ def _determine_hue_color(r: int, g: int, b: int, brightness: int, use_pale: bool
         else:
             return "pink" if use_pale else "red"
     elif g > r and g > b:
+        # Green dominant
         if r > b + 30:
             return "yellow"
         else:
@@ -302,8 +310,8 @@ def apply_gtk(colours: dict[str, str], mode: str, icon_theme: str | None = None)
 
     for gtk_version in ["gtk-3.0", "gtk-4.0"]:
         gtk_config_dir = config_dir / gtk_version
-        atomic_write(gtk_config_dir / "gtk.css", gtk_template)
-        atomic_write(gtk_config_dir / "thunar.css", thunar_template)
+        write_file(gtk_config_dir / "gtk.css", gtk_template)
+        write_file(gtk_config_dir / "thunar.css", thunar_template)
 
     subprocess.run(["dconf", "write", "/org/gnome/desktop/interface/gtk-theme", "'adw-gtk3-dark'"])
     subprocess.run(["dconf", "write", "/org/gnome/desktop/interface/color-scheme", f"'prefer-{mode}'"])
@@ -316,13 +324,13 @@ def apply_gtk(colours: dict[str, str], mode: str, icon_theme: str | None = None)
 @log_exception
 def apply_qt(colours: dict[str, str], mode: str, icon_theme: str | None = None) -> None:
     colours = gen_replace(colours, templates_dir / f"qt{mode}.colors", hash=True)
-    atomic_write(config_dir / "qtengine/caelestia.colors", colours)
+    write_file(config_dir / "qtengine/caelestia.colors", colours)
 
     config = (templates_dir / "qtengine.json").read_text()
     config = config.replace("{{ $mode }}", mode.capitalize())
     if icon_theme is not None:
         config = config.replace(f'"iconTheme": "Papirus-{mode.capitalize()}"', f'"iconTheme": "{icon_theme}"')
-    atomic_write(config_dir / "qtengine/config.json", config)
+    write_file(config_dir / "qtengine/config.json", config)
 
 
 @log_exception
@@ -331,7 +339,7 @@ def apply_warp(colours: dict[str, str], mode: str) -> None:
 
     template = gen_replace(colours, templates_dir / "warp.yaml", hash=True)
     template = template.replace("{{ $warp_mode }}", warp_mode)
-    atomic_write(data_dir / "warp-terminal/themes/caelestia.yaml", template)
+    write_file(data_dir / "warp-terminal/themes/caelestia.yaml", template)
 
 
 @log_exception
@@ -353,6 +361,7 @@ def apply_chromium(colours: dict[str, str]) -> None:
             print(f"Unable to create {policy_dir} directory")
             continue
 
+        # Use tee instead of write_file cause we need sudo
         subprocess.run(
             ["sudo", "-n", "tee", str(policy_dir / "caelestia.json")],
             input=json.dumps({"BrowserThemeColor": theme_color, "BrowserColorScheme": "device"}),
@@ -360,27 +369,28 @@ def apply_chromium(colours: dict[str, str]) -> None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        subprocess.Popen(
+        subprocess.run(
             [cmd, "--refresh-platform-policy", "--no-startup-window"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            start_new_session=True,
         )
 
 
 def apply_zed(colours: dict[str, str], mode: str) -> None:
     theme_path = config_dir / "zed/themes/caelestia.json"
+    # Zed's file watcher does not detect changes through symlinks,
+    # so resolve to a regular file before writing
     if theme_path.is_symlink():
         theme_path.unlink()
 
     content = gen_replace_dynamic(colours, templates_dir / "zed.json", mode)
-    atomic_write(theme_path, content)
+    write_file(theme_path, content)
 
 
 @log_exception
 def apply_cava(colours: dict[str, str]) -> None:
     template = gen_replace(colours, templates_dir / "cava.conf", hash=True)
-    atomic_write(config_dir / "cava/config", template)
+    write_file(config_dir / "cava/config", template)
     subprocess.run(["killall", "-USR2", "cava"], stderr=subprocess.DEVNULL)
 
 
@@ -392,58 +402,11 @@ def apply_user_templates(colours: dict[str, str], mode: str) -> None:
     for file in user_templates_dir.iterdir():
         if file.is_file():
             content = gen_replace_dynamic(colours, file, mode)
-            atomic_write(theme_dir / file.name, content)
+            write_file(theme_dir / file.name, content)
 
 
 def apply_colours(colours: dict[str, str], mode: str) -> None:
-    # Asus Keyboard Sync
-    try:
-        primary_hex = colours.get("primary", "ffffff")
-
-        primary_hex = primary_hex.lstrip("#")
-        
-        # Boost pale/light colors so they don't look white on the LED keyboard
-        import colorsys
-        try:
-            if len(primary_hex) == 6:
-                r = int(primary_hex[0:2], 16) / 255.0
-                g = int(primary_hex[2:4], 16) / 255.0
-                b = int(primary_hex[4:6], 16) / 255.0
-                h, l, s = colorsys.rgb_to_hls(r, g, b)
-                # ignoring grayscale
-                if s > 0.15:
-                    if l >= 0.85:
-                        
-                        l = max(0.5, l * 0.85)
-                        s = min(1.0, s * 1.35)
-                        r, g, b = colorsys.hls_to_rgb(h, l, s)
-                        primary_hex = f"{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
-                    elif l >= 0.75:
-                        
-                        l = max(0.5, l * 0.90)
-                        s = min(1.0, s * 1.30)
-                        r, g, b = colorsys.hls_to_rgb(h, l, s)
-                        primary_hex = f"{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
-        except ValueError:
-            pass
-        
-        # Use Popen to run asynchronously 
-        subprocess.Popen(
-            ["/usr/bin/asusctl", "aura", "effect", "static", "-c", primary_hex],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True
-        )
-        subprocess.Popen(
-            ["/usr/bin/asusctl", "leds", "set", "med"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True
-        )
-    except Exception:
-        pass
-
-    # file-based lock to prevent concurrent theme changes
+    # Use file-based lock to prevent concurrent theme changes
     lock_file = c_state_dir / "theme.lock"
     c_state_dir.mkdir(parents=True, exist_ok=True)
 
@@ -454,7 +417,10 @@ def apply_colours(colours: dict[str, str], mode: str) -> None:
             except BlockingIOError:
                 return
 
-            cfg = get_config().get("theme", {})
+            try:
+                cfg = json.loads(user_config_path.read_text())["theme"]
+            except (FileNotFoundError, json.JSONDecodeError, KeyError):
+                cfg = {}
 
             def check(key: str) -> bool:
                 return cfg[key] if key in cfg else True

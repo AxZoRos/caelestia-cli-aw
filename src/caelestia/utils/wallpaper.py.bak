@@ -164,14 +164,8 @@ def convert_gif(wall: Path) -> Path:
 
     return output_path
 
-# AW implementation 
-def convert_video(wall: Path) -> Path:
-    from caelestia.utils.paths import c_cache_dir
-    # Check for pre-generated fast thumbnail
-    fast_thumb = c_cache_dir / "videothumbs" / f"{djb2_hash(str(wall.resolve()))}.jpg"
-    if fast_thumb.exists():
-        return fast_thumb
 
+def convert_video(wall: Path) -> Path:
     cache = wallpapers_cache_dir / compute_hash(wall)
     output_path = cache / "first_frame.png"
 
@@ -200,71 +194,49 @@ def convert_video(wall: Path) -> Path:
 
 def extract_all_video_thumbs() -> None:
     from caelestia.utils.paths import wallpapers_dir, c_cache_dir
-    from concurrent.futures import ThreadPoolExecutor
-    import threading
-
     videothumbs_dir = c_cache_dir / "videothumbs"
     videothumbs_dir.mkdir(parents=True, exist_ok=True)
-    
-    ready_file = Path("/tmp/caelestia_thumb_ready.txt")
-    if ready_file.exists():
-        try:
-            ready_file.unlink()
-        except OSError:
-            pass
 
-    write_lock = threading.Lock()
-
-    def process_video(file_path: Path):
-        try:
-            resolved_path = file_path.resolve()
-            h = djb2_hash(str(resolved_path))
-            thumb_path = videothumbs_dir / f"{h}.jpg"
-            
-            
-            if not thumb_path.exists():
-                cmd = [
-                    "ffmpeg", "-y",
-                    "-ss", "00:00:00.5",
-                    "-i", str(resolved_path),
-                    "-vframes", "1",
-                    "-q:v", "4",
-                    str(thumb_path)
-                ]
-                
-                try:
-                    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-                    success = True
-                except Exception:
-                    cmd[3] = "00:00:00"
-                    try:
-                        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-                        success = True
-                    except Exception:
-                        success = False
-            else:
-                success = True
-                
-            if success:
-                with write_lock:
-                    with open(ready_file, "a") as f:
-                        f.write(f"file://{file_path}\n")
-                        
-        except Exception:
-            pass
-
-    video_extensions = {".mp4", ".webm", ".mkv"}
-    videos_to_process = []
-    
+    # Scan for video files in wallpapers_dir
+    video_extensions = [".mp4", ".webm", ".mkv"]
     for root_dir, _, files in os.walk(wallpapers_dir):
         for file in files:
             file_path = Path(root_dir) / file
             if file_path.suffix.lower() in video_extensions:
-                videos_to_process.append(file_path)
-                
-    with ThreadPoolExecutor(max_workers=16) as executor:
-        for _ in executor.map(process_video, videos_to_process):
-            pass
+                h = djb2_hash(str(file_path.resolve()))
+                thumb_path = videothumbs_dir / f"{h}.jpg"
+                if not thumb_path.exists():
+                    # Extract frame using ffmpeg
+                    temp_frame = videothumbs_dir / f"{h}_temp.png"
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-ss", "00:00:00.5",
+                        "-i", str(file_path),
+                        "-vframes", "1",
+                        "-q:v", "2",
+                        str(temp_frame)
+                    ]
+                    try:
+                        res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+                        if res.returncode == 0 and temp_frame.exists():
+                            with Image.open(temp_frame) as img:
+                                img = img.convert("RGB")
+                                img.thumbnail((256, 256), Image.Resampling.NEAREST)
+                                img.save(thumb_path, "JPEG")
+                            temp_frame.unlink(missing_ok=True)
+                    except Exception:
+                        # Fallback to 00:00:00
+                        cmd[3] = "00:00:00"
+                        try:
+                            res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+                            if res.returncode == 0 and temp_frame.exists():
+                                with Image.open(temp_frame) as img:
+                                    img = img.convert("RGB")
+                                    img.thumbnail((256, 256), Image.Resampling.NEAREST)
+                                    img.save(thumb_path, "JPEG")
+                                temp_frame.unlink(missing_ok=True)
+                        except Exception:
+                            pass
 
 
 def set_wallpaper(wall: Path, no_smart: bool) -> None:
@@ -361,5 +333,3 @@ def set_random(args: Namespace) -> None:
         pass
 
     set_wallpaper(random.choice(wallpapers), args.no_smart)
-
-

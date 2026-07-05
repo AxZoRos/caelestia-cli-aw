@@ -2,7 +2,6 @@ import subprocess
 from argparse import Namespace
 from datetime import datetime
 
-from caelestia.utils import hypr
 from caelestia.utils.notify import notify
 from caelestia.utils.paths import screenshots_cache_dir, screenshots_dir
 
@@ -34,12 +33,7 @@ class Command:
                 swappy.stdin.close()
 
     def fullscreen(self) -> None:
-        cmd = ["grim"]
-        focused_monitor = next(monitor for monitor in hypr.message("monitors") if monitor["focused"])
-        if focused_monitor:
-            cmd += ["-o", focused_monitor["name"]]
-        cmd += ["-"]
-        sc_data = subprocess.check_output(cmd)
+        sc_data = subprocess.check_output(["grim", "-"])
 
         subprocess.run(["wl-copy"], input=sc_data)
 
